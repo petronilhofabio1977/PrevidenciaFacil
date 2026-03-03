@@ -1,0 +1,149 @@
+"""
+Regra de Pontos (Transição)
+Base legal: Art. 15 da EC 103/2019
+Documentação da advogada: 
+- Homem: 35 anos contribuição + 103 pontos em 2026
+- Mulher: 30 anos contribuição + 93 pontos em 2026
+- Dinâmica: sobe 1 ponto/ano até 105(H)/100(M) em 2028
+"""
+
+from datetime import date
+import json
+import os
+from app.core.rules import RegraBase, ResultadoRegra
+from app.models.cliente import Cliente
+
+class RegraPontos(RegraBase):
+    """
+    Regra de Aposentadoria por Pontos (Transição)
+    Conforme documentação da advogada - 2026
+    """
+    
+    def __init__(self):
+        # Carrega tabela de pontos do JSON (conforme seção 8.5 do documento)
+        self.tabela_pontos = self._carregar_tabela()
+    
+    def _carregar_tabela(self):
+        """Carrega a tabela de progressão de pontos do arquivo JSON"""
+        try:
+            caminho = os.path.join(
+                os.path.dirname(__file__), 
+                '..', 'tables', 'pontos.json'
+            )
+            with open(caminho, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            # Fallback para a tabela do documento (seção 8.5)
+            return {
+                "2026": {"homem": 93, "mulher": 83},
+                "2027": {"homem": 94, "mulher": 84},
+                "2028": {"homem": 105, "mulher": 100}
+            }
+    
+    def nome(self) -> str:
+        return "Regra de Pontos (Transição)"
+    
+    def verificar(self, cliente: Cliente) -> ResultadoRegra:
+        """
+        Verifica elegibilidade para Regra de Pontos
+        Conforme fluxograma da advogada
+        """
+        # 1. Verificar se tem direito à transição (filiado antes 13/11/2019)
+        if not cliente.elegivel_transicao:
+            return ResultadoRegra(
+                nome_regra=self.nome(),
+                elegivel=False,
+                o_que_falta="Cliente não tem direito às regras de transição (filiado após 13/11/2019)",
+                detalhes={"motivo": "pos_reforma"}
+            )
+        
+        # 2. Verificar tempo mínimo de contribuição
+        tempo_contribuicao_anos = cliente.tempo_contribuicao_dias / 365.25
+        
+        if cliente.sexo == "M" and tempo_contribuicao_anos < 35:
+            return ResultadoRegra(
+                nome_regra=self.nome(),
+                elegivel=False,
+                o_que_falta=f"Tempo de contribuição insuficiente: {tempo_contribuicao_anos:.1f}/35 anos",
+                detalhes={"tempo_atual": tempo_contribuicao_anos, "tempo_necessario": 35}
+            )
+        
+        if cliente.sexo == "F" and tempo_contribuicao_anos < 30:
+            return ResultadoRegra(
+                nome_regra=self.nome(),
+                elegivel=False,
+                o_que_falta=f"Tempo de contribuição insuficiente: {tempo_contribuicao_anos:.1f}/30 anos",
+                detalhes={"tempo_atual": tempo_contribuicao_anos, "tempo_necessario": 30}
+            )
+        
+        # 3. Calcular pontos (idade + tempo de contribuição)
+        idade = cliente.idade
+        pontos = idade + tempo_contribuicao_anos
+        
+        # 4. Obter pontos mínimos para o ano atual (2026)
+        ano_atual = date.today().year
+        ano_str = str(ano_atual)
+        
+        if ano_str in self.tabela_pontos:
+            pontos_minimos = self.tabela_pontos[ano_str][
+                "homem" if cliente.sexo == "M" else "mulher"
+            ]
+        else:
+            # Se ano não está na tabela, usa regra permanente (2028+)
+            pontos_minimos = 105 if cliente.sexo == "M" else 100
+        
+        # 5. Verificar elegibilidade
+        elegivel = pontos >= pontos_minimos
+        
+        if elegivel:
+            # Cálculo simplificado da RMI (média dos 80% maiores salários)
+            rmi_estimada = None
+            if cliente.salarios_contribuicao:
+                salarios_ordenados = sorted(cliente.salarios_contribuicao, reverse=True)
+                n = len(salarios_ordenados)
+                k = int(n * 0.8)
+                maiores_80 = salarios_ordenados[:k]
+                rmi_estimada = sum(maiores_80) / len(maiores_80) if maiores_80 else 0
+            
+            o_que_falta = None
+        else:
+            rmi_estimada = None
+            pontos_faltando = pontos_minimos - pontos
+            o_que_falta = f"Faltam {pontos_faltando:.1f} pontos (atual: {pontos:.1f}, necessário: {pontos_minimos})"
+        
+        # 6. Detalhes completos para exibição
+        detalhes = {
+            "idade_atual": round(idade, 2),
+            "tempo_contribuicao_anos": round(tempo_contribuicao_anos, 2),
+            "pontos_atuais": round(pontos, 2),
+            "pontos_necessarios": pontos_minimos,
+            "ano_referencia": ano_atual,
+            "diferenca_pontos": round(pontos_minimos - pontos, 2) if not elegivel else 0,
+            "proxima_meta": self._proxima_meta(cliente, pontos, ano_atual)
+        }
+        
+        return ResultadoRegra(
+            nome_regra=self.nome(),
+            elegivel=elegivel,
+            rmi_estimada=rmi_estimada,
+            o_que_falta=o_que_falta,
+            detalhes=detalhes
+        )
+    
+    def _proxima_meta(self, cliente: Cliente, pontos_atuais: float, ano_atual: int) -> dict:
+        """Calcula projeção de quando atingirá os pontos necessários"""
+        if cliente.sexo == "M":
+            meta_final = 105
+            incremento_anual = 1  # Sobe 1 ponto por ano
+        else:
+            meta_final = 100
+            incremento_anual = 1
+        
+        anos_necessarios = (meta_final - pontos_atuais) / incremento_anual
+        ano_previsto = ano_atual + int(anos_necessarios) + 1
+        
+        return {
+            "ano_previsto": ano_previsto,
+            "pontos_na_meta": meta_final,
+            "cenario": "otimista" if anos_necessarios < 5 else "realista"
+        }

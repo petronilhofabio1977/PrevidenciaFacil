@@ -1,0 +1,240 @@
+from app.models.documento import DocumentoDB
+from sqlalchemy import Column, String, Date, Enum, Boolean, Text, TIMESTAMP, UUID, ForeignKey, Float
+from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.sql import func
+import uuid
+import enum
+from datetime import date
+from dataclasses import dataclass
+from typing import Optional, List
+
+# Definir Base
+Base = declarative_base()
+
+class SexoEnum(str, enum.Enum):
+    M = "Masculino"
+    F = "Feminino"
+
+class CategoriaSeguradoEnum(str, enum.Enum):
+    CLT = "CLT"
+    AUTONOMO = "Autônomo"
+    MEI = "MEI"
+    DOMESTICO = "Doméstico"
+    RURAL = "Rural"
+    SERVIDOR = "Servidor"
+
+class DeficienciaEnum(str, enum.Enum):
+    NENHUMA = "nenhuma"
+    LEVE = "leve"
+    MODERADA = "moderada"
+    GRAVE = "grave"
+
+class TipoVinculoEnum(str, enum.Enum):
+    CLT = "CLT"
+    AUTONOMO = "autonomo"
+    DOMESTICO = "domestico"
+    SERVIDOR = "servidor"
+    RURAL = "rural"
+
+class RegimeEnum(str, enum.Enum):
+    RGPS = "RGPS"
+    RPPS = "RPPS"
+
+class OrigemEnum(str, enum.Enum):
+    MANUAL = "manual"
+    CNIS = "cnis"
+
+class Usuario(Base):
+    __tablename__ = 'usuarios'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    nome = Column(String(200), nullable=False)
+    email = Column(String(200), unique=True, nullable=False, index=True)
+    senha_hash = Column(String(200), nullable=False)
+    criado_em = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    ativo = Column(Boolean, default=True)
+    
+    # Relacionamentos
+    clientes = relationship("ClienteDB", back_populates="usuario")
+
+class ClienteDB(Base):
+    """Versão ORM para banco de dados"""
+    __tablename__ = 'clientes'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    nome_completo = Column(String(200), nullable=False)
+    cpf = Column(String(14), unique=True, nullable=False, index=True)
+    data_nascimento = Column(Date, nullable=False)
+    sexo = Column(Enum(SexoEnum), nullable=False)
+    categoria_segurado = Column(Enum(CategoriaSeguradoEnum), nullable=False)
+    data_filiacao_rgps = Column(Date, nullable=True)
+    professor = Column(Boolean, default=False)
+    atividade_rural = Column(Boolean, default=False)
+    deficiencia = Column(Enum(DeficienciaEnum), default=DeficienciaEnum.NENHUMA)
+    observacoes = Column(Text, nullable=True)
+    criado_em = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    usuario_id = Column(UUID(as_uuid=True), ForeignKey('usuarios.id'), nullable=False)
+    
+    # Relacionamentos
+    usuario = relationship("Usuario", back_populates="clientes")
+    vinculos = relationship("VinculoDB", back_populates="cliente", cascade="all, delete-orphan")
+    salarios = relationship("SalarioContribuicaoDB", back_populates="cliente", cascade="all, delete-orphan")
+    periodos_especiais = relationship("PeriodoEspecialDB", back_populates="cliente", cascade="all, delete-orphan")
+
+@dataclass
+class Vinculo:
+    """Modelo de domínio para vínculos empregatícios (POO puro)"""
+    id: Optional[str]
+    cliente_id: str
+    empregador: str
+    cnpj_cpf_empregador: Optional[str]
+    data_inicio: date
+    data_fim: Optional[date]
+    tipo_vinculo: str
+    regime: str = "RGPS"
+    origem: str = "manual"
+    divergencia_cnis: bool = False
+    
+    @property
+    def duracao_dias(self) -> int:
+        """Calcula duração do vínculo em dias"""
+        fim = self.data_fim if self.data_fim else date.today()
+        return (fim - self.data_inicio).days
+
+class VinculoDB(Base):
+    """Versão ORM para banco de dados"""
+    __tablename__ = 'vinculos'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cliente_id = Column(UUID(as_uuid=True), ForeignKey('clientes.id'), nullable=False)
+    empregador = Column(String(200), nullable=False)
+    cnpj_cpf_empregador = Column(String(18), nullable=True)
+    data_inicio = Column(Date, nullable=False)
+    data_fim = Column(Date, nullable=True)
+    tipo_vinculo = Column(Enum(TipoVinculoEnum), nullable=False)
+    regime = Column(Enum(RegimeEnum), default=RegimeEnum.RGPS)
+    origem = Column(Enum(OrigemEnum), default=OrigemEnum.MANUAL)
+    divergencia_cnis = Column(Boolean, default=False)
+    criado_em = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    
+    # Relacionamentos
+    cliente = relationship("ClienteDB", back_populates="vinculos")
+
+@dataclass
+class SalarioContribuicao:
+    """Modelo de domínio para salários de contribuição"""
+    id: Optional[str]
+    cliente_id: str
+    competencia: date
+    valor: float
+    origem: str = "manual"
+    
+class SalarioContribuicaoDB(Base):
+    """Versão ORM para banco de dados"""
+    __tablename__ = 'salarios_contribuicao'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cliente_id = Column(UUID(as_uuid=True), ForeignKey('clientes.id'), nullable=False)
+    competencia = Column(Date, nullable=False)
+    valor = Column(Float, nullable=False)
+    origem = Column(Enum(OrigemEnum), default=OrigemEnum.MANUAL)
+    criado_em = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    
+    # Relacionamentos
+    cliente = relationship("ClienteDB", back_populates="salarios")
+    documentos = relationship("DocumentoDB", back_populates="cliente", cascade="all, delete-orphan")
+
+@dataclass
+class PeriodoEspecial:
+    """Modelo de domínio para períodos de atividade especial"""
+    id: Optional[str]
+    cliente_id: str
+    data_inicio: date
+    data_fim: Optional[date]
+    agente_nocivo: str
+    ppp_disponivel: bool = False
+    intensidade: str = "moderada"
+    
+class PeriodoEspecialDB(Base):
+    """Versão ORM para banco de dados"""
+    __tablename__ = 'periodos_especiais'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cliente_id = Column(UUID(as_uuid=True), ForeignKey('clientes.id'), nullable=False)
+    data_inicio = Column(Date, nullable=False)
+    data_fim = Column(Date, nullable=True)
+    agente_nocivo = Column(String(200), nullable=False)
+    ppp_disponivel = Column(Boolean, default=False)
+    intensidade = Column(String(50), default="moderada")
+    criado_em = Column(TIMESTAMP(timezone=True), server_default=func.now())
+    
+    # Relacionamentos
+    cliente = relationship("ClienteDB", back_populates="periodos_especiais")
+
+@dataclass
+class Cliente:
+    """Versão DOMÍNIO (POO pura) para o motor de regras"""
+    id: Optional[str]
+    nome_completo: str
+    cpf: str
+    data_nascimento: date
+    sexo: str
+    categoria_segurado: str
+    data_filiacao_rgps: Optional[date]
+    professor: bool = False
+    atividade_rural: bool = False
+    deficiencia: str = "nenhuma"
+    tempo_contribuicao_dias: int = 0
+    salarios_contribuicao: List[float] = None
+    tem_atividade_especial: bool = False
+    vinculos: List[Vinculo] = None
+    periodos_especiais: List[PeriodoEspecial] = None
+    
+    def __post_init__(self):
+        if self.salarios_contribuicao is None:
+            self.salarios_contribuicao = []
+        if self.vinculos is None:
+            self.vinculos = []
+        if self.periodos_especiais is None:
+            self.periodos_especiais = []
+    
+    @property
+    def idade(self) -> int:
+        """Calcula idade atual"""
+        hoje = date.today()
+        return hoje.year - self.data_nascimento.year - (
+            (hoje.month, hoje.day) < (self.data_nascimento.month, self.data_nascimento.day)
+        )
+    
+    @property
+    def idade_exata(self) -> float:
+        """Calcula idade exata em anos com decimais"""
+        hoje = date.today()
+        idade = hoje.year - self.data_nascimento.year
+        
+        if (hoje.month, hoje.day) < (self.data_nascimento.month, self.data_nascimento.day):
+            idade -= 1
+        
+        dia_aniversario = date(hoje.year, self.data_nascimento.month, self.data_nascimento.day)
+        if hoje < dia_aniversario:
+            dia_aniversario = date(hoje.year - 1, self.data_nascimento.month, self.data_nascimento.day)
+        
+        dias_desde_aniversario = (hoje - dia_aniversario).days
+        return round(idade + (dias_desde_aniversario / 365.25), 2)
+    
+    @property
+    def elegivel_transicao(self) -> bool:
+        """Verifica se tem direito às regras de transição"""
+        if not self.data_filiacao_rgps:
+            return False
+        data_corte = date(2019, 11, 13)
+        return self.data_filiacao_rgps < data_corte
+    
+    @property
+    def tempo_contribuicao_anos(self) -> float:
+        """Retorna tempo de contribuição em anos"""
+        return round(self.tempo_contribuicao_dias / 365.25, 2)
+    
+    def calcular_carencia_meses(self) -> int:
+        """Calcula número de meses com contribuição"""
+        return len(self.salarios_contribuicao) if self.salarios_contribuicao else 0

@@ -1,0 +1,168 @@
+"""
+Regra de Pedágio 50% (Transição)
+Base legal: Art. 17 da EC 103/2019
+Documentação da advogada:
+- Apenas para quem faltava até 2 anos para se aposentar em 13/11/2019
+- Requisito: Cumprir tempo que faltava + 50% desse tempo (pedágio)
+- Aplica-se Fator Previdenciário no cálculo
+"""
+
+from datetime import date, datetime
+import json
+import os
+from app.core.rules import RegraBase, ResultadoRegra
+from app.models.cliente import Cliente
+from app.core.calculators.fator_prev import CalculadoraFatorPrevidenciario
+from app.core.calculators.tempo import CalculadoraTempo
+
+class RegraPedagio50(RegraBase):
+    """
+    Regra de Aposentadoria com Pedágio de 50% (Transição)
+    Conforme documentação da advogada
+    """
+    
+    def __init__(self):
+        self.calc_fator = CalculadoraFatorPrevidenciario()
+        self.calc_tempo = CalculadoraTempo()
+        self.data_corte = date(2019, 11, 13)
+    
+    def nome(self) -> str:
+        return "Pedágio 50% (Transição)"
+    
+    def _calcular_tempo_faltante_em_2019(self, cliente: Cliente) -> float:
+        """
+        Calcula quanto tempo faltava para o cliente se aposentar
+        em 13/11/2019
+        """
+        # Tempo necessário para aposentadoria por tempo de contribuição
+        tempo_necessario = 35 if cliente.sexo == "M" else 30  # anos
+        
+        # Tempo de contribuição até a data de corte
+        tempo_ate_corte = self.calc_tempo.tempo_ate_data(
+            cliente.vinculos, 
+            self.data_corte
+        )
+        
+        # Tempo que faltava em 13/11/2019
+        tempo_faltante = max(0, tempo_necessario - tempo_ate_corte)
+        
+        return tempo_faltante
+    
+    def verificar(self, cliente: Cliente) -> ResultadoRegra:
+        """
+        Verifica elegibilidade para Pedágio 50%
+        Conforme fluxograma da advogada
+        """
+        # 1. Verificar se tem direito à transição
+        if not cliente.elegivel_transicao:
+            return ResultadoRegra(
+                nome_regra=self.nome(),
+                elegivel=False,
+                o_que_falta="Cliente não tem direito às regras de transição",
+                detalhes={"motivo": "pos_reforma"}
+            )
+        
+        # 2. Calcular tempo que faltava em 13/11/2019
+        tempo_faltante_2019 = self._calcular_tempo_faltante_em_2019(cliente)
+        
+        # 3. Verificar se se enquadra no pedágio 50% (faltava até 2 anos)
+        if tempo_faltante_2019 > 2:  # mais de 2 anos
+            return ResultadoRegra(
+                nome_regra=self.nome(),
+                elegivel=False,
+                o_que_falta=f"Em 13/11/2019 faltavam {tempo_faltante_2019:.1f} anos (> 2 anos)",
+                detalhes={
+                    "tempo_faltante_2019": round(tempo_faltante_2019, 2),
+                    "motivo": "tempo_faltante_superior_2anos"
+                }
+            )
+        
+        # 4. Calcular pedágio de 50%
+        pedagio = tempo_faltante_2019 * 0.5
+        
+        # 5. Tempo total necessário = tempo que já tinha + tempo que faltava + pedágio
+        # Mas na prática, ele precisa cumprir: (tempo que faltava + 50% desse tempo)
+        # a partir de 13/11/2019
+        
+        # Tempo de contribuição atual
+        tempo_atual_anos = cliente.tempo_contribuicao_dias / 365.25
+        
+        # Tempo que ele já tinha em 2019
+        tempo_ate_corte = self.calc_tempo.tempo_ate_data(
+            cliente.vinculos, 
+            self.data_corte
+        )
+        
+        # Tempo que ele precisa cumprir após o corte
+        tempo_a_cumprir = tempo_faltante_2019 + pedagio
+        
+        # Tempo total que ele terá após cumprir
+        tempo_total_futuro = tempo_ate_corte + tempo_a_cumprir
+        
+        # Verificar se já cumpriu o tempo necessário
+        tempo_cumprido_apos_corte = max(0, tempo_atual_anos - tempo_ate_corte)
+        elegivel = tempo_cumprido_apos_corte >= tempo_a_cumprir
+        
+        # Calcular RMI se elegível
+        rmi_estimada = None
+        o_que_falta = None
+        detalhes = {}
+        
+        if elegivel:
+            # Aplica fator previdenciário no cálculo
+            if cliente.salarios_contribuicao:
+                # Média dos 80% maiores salários
+                salarios_ordenados = sorted(cliente.salarios_contribuicao, reverse=True)
+                n = len(salarios_ordenados)
+                k = int(n * 0.8)
+                maiores_80 = salarios_ordenados[:k]
+                media_80 = sum(maiores_80) / len(maiores_80) if maiores_80 else 0
+                
+                # Calcular fator previdenciário
+                fator = self.calc_fator.calcular(
+                    idade=cliente.idade,
+                    tempo_contribuicao_anos=tempo_total_futuro,
+                    expectativa_vida=self._get_expectativa_vida(cliente.idade)
+                )
+                
+                rmi_estimada = media_80 * fator
+                
+                detalhes = {
+                    "media_80_maiores": round(media_80, 2),
+                    "fator_previdenciario": round(fator, 4),
+                    "tempo_total_contribuicao": round(tempo_total_futuro, 2),
+                    "pedagio_aplicado": round(pedagio, 2)
+                }
+        else:
+            # Calcular quanto ainda falta
+            tempo_restante = tempo_a_cumprir - tempo_cumprido_apos_corte
+            o_que_falta = f"Faltam {tempo_restante:.1f} anos para cumprir pedágio de 50%"
+            detalhes = {
+                "tempo_faltante_2019": round(tempo_faltante_2019, 2),
+                "pedagio_50": round(pedagio, 2),
+                "tempo_ja_cumprido_apos_corte": round(tempo_cumprido_apos_corte, 2),
+                "tempo_total_a_cumprir": round(tempo_a_cumprir, 2)
+            }
+        
+        return ResultadoRegra(
+            nome_regra=self.nome(),
+            elegivel=elegivel,
+            rmi_estimada=rmi_estimada,
+            o_que_falta=o_que_falta,
+            detalhes=detalhes
+        )
+    
+    def _get_expectativa_vida(self, idade: int) -> float:
+        """Busca expectativa de vida na tabela do IBGE"""
+        try:
+            caminho = os.path.join(
+                os.path.dirname(__file__), 
+                '..', 'tables', 'expectativa_vida.json'
+            )
+            with open(caminho, 'r') as f:
+                tabela = json.load(f)
+                # Tabela tem formato: {"65": 18.2, ...}
+                return tabela.get(str(int(idade)), 18.2)  # valor padrão
+        except:
+            # Fallback: valor aproximado para 65 anos
+            return 18.2

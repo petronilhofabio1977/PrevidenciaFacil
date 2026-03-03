@@ -1,0 +1,201 @@
+"""
+Regra de Aposentadoria por Idade (Regra Permanente)
+Base legal: Art. 19 da EC 103/2019 + Art. 48 da Lei 8.213/1991
+Documentação da advogada:
+- Homem: 65 anos idade + 20 anos contribuição (240 meses)
+- Mulher: 62 anos idade + 15 anos contribuição (180 meses)
+- Aplica-se a todos filiados após a Reforma ou que não optaram por transição
+"""
+
+from datetime import date
+import json
+import os
+from app.core.rules import RegraBase, ResultadoRegra
+from app.models.cliente import Cliente
+from app.core.calculators.tempo import CalculadoraTempo
+
+class RegraIdade(RegraBase):
+    """
+    Regra de Aposentadoria por Idade (Permanente)
+    Conforme documentação da advogada
+    """
+    
+    def __init__(self):
+        self.calc_tempo = CalculadoraTempo()
+        
+        # Requisitos por sexo (conforme documentação)
+        self.requisitos = {
+            "M": {
+                "idade_minima": 65,
+                "tempo_minimo_anos": 20,  # 240 meses
+                "tempo_minimo_meses": 240,
+                "carencia_meses": 180  # 15 anos para todos
+            },
+            "F": {
+                "idade_minima": 62,
+                "tempo_minimo_anos": 15,  # 180 meses
+                "tempo_minimo_meses": 180,
+                "carencia_meses": 180
+            }
+        }
+    
+    def nome(self) -> str:
+        return "Aposentadoria por Idade (Permanente)"
+    
+    def _calcular_idade(self, data_nascimento: date) -> float:
+        """Calcula idade exata em anos (com decimal)"""
+        hoje = date.today()
+        idade = hoje.year - data_nascimento.year
+        
+        # Ajuste fino para meses/dias
+        if (hoje.month, hoje.day) < (data_nascimento.month, data_nascimento.day):
+            idade -= 1
+        
+        # Calcular fração do ano
+        dia_aniversario = date(hoje.year, data_nascimento.month, data_nascimento.day)
+        if hoje < dia_aniversario:
+            dia_aniversario = date(hoje.year - 1, data_nascimento.month, data_nascimento.day)
+        
+        dias_desde_aniversario = (hoje - dia_aniversario).days
+        idade_exata = idade + (dias_desde_aniversario / 365.25)
+        
+        return idade_exata
+    
+    def _verificar_carencia(self, cliente: Cliente) -> tuple[bool, int]:
+        """
+        Verifica carência mínima de 180 meses (15 anos)
+        Retorna (atingiu, meses_restantes)
+        """
+        # Carência é baseada no número de contribuições mensais
+        if not cliente.salarios_contribuicao:
+            return False, 180
+        
+        # Número de meses com contribuição
+        meses_contribuicao = len(cliente.salarios_contribuicao)
+        carencia_minima = 180  # 15 anos
+        
+        return meses_contribuicao >= carencia_minima, max(0, carencia_minima - meses_contribuicao)
+    
+    def verificar(self, cliente: Cliente) -> ResultadoRegra:
+        """
+        Verifica elegibilidade para Aposentadoria por Idade
+        Conforme fluxograma da advogada
+        """
+        # 1. Obter requisitos baseado no sexo
+        req = self.requisitos.get(cliente.sexo)
+        if not req:
+            return ResultadoRegra(
+                nome_regra=self.nome(),
+                elegivel=False,
+                o_que_falta="Sexo não especificado corretamente",
+                detalhes={"erro": "sexo_invalido"}
+            )
+        
+        # 2. Calcular idade exata
+        idade_exata = self._calcular_idade(cliente.data_nascimento)
+        
+        # 3. Verificar tempo de contribuição
+        tempo_contribuicao_anos = cliente.tempo_contribuicao_dias / 365.25
+        
+        # 4. Verificar carência
+        carencia_ok, meses_restantes = self._verificar_carencia(cliente)
+        
+        # 5. Verificar elegibilidade
+        idade_ok = idade_exata >= req["idade_minima"]
+        tempo_ok = tempo_contribuicao_anos >= req["tempo_minimo_anos"]
+        
+        elegivel = idade_ok and tempo_ok and carencia_ok
+        
+        # Calcular RMI se elegível
+        rmi_estimada = None
+        o_que_falta = None
+        detalhes = {}
+        
+        if elegivel:
+            # Cálculo da RMI: média dos 80% maiores salários
+            # Sem fator previdenciário (regra de idade)
+            if cliente.salarios_contribuicao:
+                salarios_ordenados = sorted(cliente.salarios_contribuicao, reverse=True)
+                n = len(salarios_ordenados)
+                k = int(n * 0.8)  # 80% maiores
+                maiores_80 = salarios_ordenados[:k]
+                rmi_estimada = sum(maiores_80) / len(maiores_80) if maiores_80 else 0
+                
+                # Coeficiente de 70% + 1% por ano de contribuição acima de 15/20 anos
+                # Para homens: 70% + 1% por ano acima de 20 anos de contribuição
+                # Para mulheres: 70% + 1% por ano acima de 15 anos de contribuição
+                anos_base = 20 if cliente.sexo == "M" else 15
+                anos_extras = max(0, int(tempo_contribuicao_anos - anos_base))
+                coeficiente = min(100, 70 + anos_extras)  # Máximo 100%
+                
+                rmi_estimada = rmi_estimada * (coeficiente / 100)
+                
+                detalhes = {
+                    "media_80_maiores": round(sum(maiores_80) / len(maiores_80), 2),
+                    "coeficiente_aplicado": f"{coeficiente}%",
+                    "anos_extras_contribuicao": anos_extras,
+                    "idade_exata": round(idade_exata, 2),
+                    "tempo_contribuicao": round(tempo_contribuicao_anos, 2)
+                }
+        else:
+            # Compilar lista do que falta
+            faltas = []
+            if not idade_ok:
+                anos_faltando = req["idade_minima"] - idade_exata
+                faltas.append(f"{anos_faltando:.1f} anos de idade")
+            if not tempo_ok:
+                anos_faltando = req["tempo_minimo_anos"] - tempo_contribuicao_anos
+                faltas.append(f"{anos_faltando:.1f} anos de contribuição")
+            if not carencia_ok:
+                faltas.append(f"{meses_restantes} meses de carência")
+            
+            o_que_falta = "Falta: " + ", ".join(faltas)
+            
+            detalhes = {
+                "idade_atual": round(idade_exata, 2),
+                "idade_necessaria": req["idade_minima"],
+                "tempo_atual": round(tempo_contribuicao_anos, 2),
+                "tempo_necessario": req["tempo_minimo_anos"],
+                "carencia_restante_meses": meses_restantes if not carencia_ok else 0,
+                "carência_atingida": carencia_ok
+            }
+        
+        return ResultadoRegra(
+            nome_regra=self.nome(),
+            elegivel=elegivel,
+            rmi_estimada=rmi_estimada,
+            o_que_falta=o_que_falta,
+            detalhes=detalhes
+        )
+    
+    def projetar_idade_necessaria(self, cliente: Cliente) -> dict:
+        """
+        Projeta quando o cliente atingirá os requisitos
+        Útil para a funcionalidade de projeção de cenários
+        """
+        req = self.requisitos.get(cliente.sexo)
+        if not req:
+            return {}
+        
+        idade_exata = self._calcular_idade(cliente.data_nascimento)
+        tempo_atual = cliente.tempo_contribuicao_dias / 365.25
+        
+        # Anos necessários para atingir idade mínima
+        anos_para_idade = max(0, req["idade_minima"] - idade_exata)
+        
+        # Anos necessários para atingir tempo mínimo
+        anos_para_tempo = max(0, req["tempo_minimo_anos"] - tempo_atual)
+        
+        # A data será o máximo entre os dois
+        anos_necessarios = max(anos_para_idade, anos_para_tempo)
+        
+        from datetime import timedelta
+        data_prevista = date.today() + timedelta(days=int(anos_necessarios * 365.25))
+        
+        return {
+            "data_prevista": data_prevista.isoformat(),
+            "anos_necessarios": round(anos_necessarios, 2),
+            "idade_na_data": round(idade_exata + anos_necessarios, 2),
+            "tempo_na_data": round(tempo_atual + anos_necessarios, 2),
+            "atinge_primeiro": "idade" if anos_para_idade > anos_para_tempo else "tempo"
+        }
