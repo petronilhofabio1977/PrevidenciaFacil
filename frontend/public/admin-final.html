@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin - PrevidênciaFácil</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+        }
+        h1 { color: #1e3a8a; margin-bottom: 1rem; }
+        .success { font-size: 3rem; color: #10b981; margin-bottom: 1rem; }
+        .info {
+            background: #f3f4f6;
+            padding: 1rem;
+            border-radius: 4px;
+            text-align: left;
+            margin: 1rem 0;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #1d4ed8; }
+        .danger { background: #dc2626; }
+        .danger:hover { background: #b91c1c; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="success">✅</div>
+        <h1>Área Administrativa</h1>
+        
+        <div id="info" class="info">Carregando informações...</div>
+        
+        <div>
+            <button onclick="irPara('/teste-simples.html')">Página de Teste</button>
+            <button onclick="sair()" class="danger">Sair</button>
+        </div>
+    </div>
+
+    <script>
+        function irPara(path) {
+            window.location.href = path;
+        }
+
+        function sair() {
+            localStorage.clear();
+            window.location.href = '/teste-simples.html';
+        }
+
+        // Mostrar informações
+        const token = localStorage.getItem('token');
+        const usuario = localStorage.getItem('usuario');
+        
+        if (!token) {
+            document.getElementById('info').innerHTML = '❌ Não logado! <a href="/teste-simples.html">Fazer login</a>';
+        } else {
+            try {
+                const user = JSON.parse(usuario);
+                document.getElementById('info').innerHTML = `
+                    <strong>Logado como:</strong> ${user.nome}<br>
+                    <strong>Email:</strong> ${user.email}<br>
+                    <strong>Admin:</strong> ${user.is_admin ? 'Sim' : 'Não'}
+                `;
+            } catch (e) {
+                document.getElementById('info').innerHTML = '❌ Erro ao carregar dados';
+            }
+        }
+    </script>
+</body>
+</html>

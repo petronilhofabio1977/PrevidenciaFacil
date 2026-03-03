@@ -1,0 +1,10 @@
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  // Desabilitar turbopack explicitamente
+  experimental: {
+    turbo: false
+  }
+}
+
+module.exports = nextConfig

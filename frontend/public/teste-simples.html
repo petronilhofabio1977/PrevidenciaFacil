@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Teste Simples</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #f3f4f6;
+        }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { color: #1e3a8a; }
+        pre {
+            background: #f3f4f6;
+            padding: 10px;
+            border-radius: 4px;
+            overflow: auto;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover { background: #1d4ed8; }
+        .danger { background: #dc2626; }
+        .danger:hover { background: #b91c1c; }
+        .info {
+            background: #e0f2fe;
+            color: #0369a1;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Diagnóstico do Sistema</h1>
+        
+        <div id="status" class="info">Carregando...</div>
+        
+        <div style="margin: 20px 0;">
+            <h3>Testes Rápidos:</h3>
+            <button onclick="testarBackend()">1. Testar Backend</button>
+            <button onclick="testarLogin()">2. Testar Login</button>
+            <button onclick="verificarStorage()">3. Ver Storage</button>
+            <button onclick="forcarRedirect()" class="danger">4. Forçar Redirect</button>
+        </div>
+
+        <div id="resultado" style="margin-top: 20px;">
+            <pre>Clique em um botão para testar...</pre>
+        </div>
+
+        <div style="margin-top: 20px;">
+            <h3>Links Úteis:</h3>
+            <button onclick="irPara('/admin-final')">Ir para Admin Final</button>
+            <button onclick="irPara('/login')">Ir para Login</button>
+            <button onclick="irPara('/redirect')">Ir para Redirect</button>
+        </div>
+    </div>
+
+    <script>
+        function log(msg) {
+            document.getElementById('resultado').innerHTML = `<pre>${msg}</pre>`;
+        }
+
+        function irPara(path) {
+            window.location.href = path;
+        }
+
+        function testarBackend() {
+            log('📡 Testando backend...');
+            fetch('http://localhost:8000/health')
+                .then(res => res.json())
+                .then(data => {
+                    log('✅ Backend OK:\n' + JSON.stringify(data, null, 2));
+                })
+                .catch(err => {
+                    log('❌ Erro backend:\n' + err.message);
+                });
+        }
+
+        function testarLogin() {
+            log('📡 Testando login...');
+            fetch('http://localhost:8000/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    username: 'petronilho@email.com',
+                    password: '6121060F1977po!'
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.access_token) {
+                    localStorage.setItem('token', data.access_token);
+                    localStorage.setItem('usuario', JSON.stringify(data.usuario));
+                    log('✅ Login OK!\n' + JSON.stringify(data, null, 2));
+                    document.getElementById('status').innerHTML = '✅ Logado como: ' + data.usuario.nome;
+                } else {
+                    log('❌ Erro login:\n' + JSON.stringify(data, null, 2));
+                }
+            })
+            .catch(err => {
+                log('❌ Erro rede:\n' + err.message);
+            });
+        }
+
+        function verificarStorage() {
+            const token = localStorage.getItem('token');
+            const usuario = localStorage.getItem('usuario');
+            
+            log('📦 localStorage:\n' + JSON.stringify({
+                token: token ? token.substring(0, 30) + '...' : null,
+                usuario: usuario ? JSON.parse(usuario) : null
+            }, null, 2));
+            
+            document.getElementById('status').innerHTML = usuario ? 
+                '✅ Logado como: ' + JSON.parse(usuario).nome : 
+                '❌ Não logado';
+        }
+
+        function forcarRedirect() {
+            const token = localStorage.getItem('token');
+            const usuario = localStorage.getItem('usuario');
+            
+            log('🚀 Forçando redirect...\nToken: ' + (token ? 'OK' : 'Não encontrado'));
+            
+            if (!token) {
+                window.location.href = '/login';
+                return;
+            }
+            
+            const userData = JSON.parse(usuario || '{}');
+            
+            if (userData.is_admin) {
+                window.location.href = '/admin-final';
+            } else {
+                window.location.href = '/dashboard';
+            }
+        }
+
+        // Verificar status ao carregar
+        window.onload = verificarStorage;
+    </script>
+</body>
+</html>
